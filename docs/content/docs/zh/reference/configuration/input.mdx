@@ -267,7 +267,7 @@ export default defineConfig({
 
 **类型：** `(value: string) => Promise<string> | string`
 
-在解析外部引用时传递给 `@scalar/json-magic` 的可选回调。该回调可以同步或异步执行。它接收 Scalar 标准化后的外部文档标识/path（不一定是 `$ref` 中的原始字符串），并返回该文档在内部使用的 key。
+在解析外部引用时传递给 `@scalar/json-magic` 的可选回调。该回调可以同步或异步执行。它接收 Scalar 标准化后的外部文档标识或路径（不一定是 `$ref` 中的原始字符串），并返回该文档在内部使用的 key。
 
 如果希望在 `externalRefs.strategy: 'always'` 下生成可读的 schema 名称，可以返回稳定的服务名称：
 
@@ -286,10 +286,21 @@ export default defineConfig({
       target: './openapi.yaml',
       parserOptions: {
         compress: externalIdentity,
+        externalRefs: {
+          allow: ['*'],
+          strategy: 'always',
+        },
       },
     },
   },
 });
+```
+
+使用此配置时，`billing.yaml` 中的 `User` schema 会生成为 `User_billing`。异步回调使用相同的配置结构：
+
+```ts
+const externalIdentity = async (value: string) =>
+  value.includes('billing') ? 'billing' : value;
 ```
 
 不同外部文档应返回不同的值。如果无法生成唯一 key，解析会失败，而不会静默合并两个文档。

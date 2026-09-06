@@ -308,6 +308,14 @@ export default defineConfig({
 });
 ```
 
+With this configuration, a `User` schema from `billing.yaml` is emitted as
+`User_billing`. An asynchronous callback uses the same configuration shape:
+
+```ts
+const externalIdentity = async (value: string) =>
+  value.includes('billing') ? 'billing' : value;
+```
+
 The callback must produce unique values for distinct external documents. Scalar
 will retry collisions, but a callback that cannot produce a unique value fails
 instead of silently merging two documents.
