@@ -242,21 +242,42 @@ export interface NormalizedOperationOptions {
   requestOptions?: object | boolean;
 }
 
+export type ExternalRefNamingStrategy = 'default' | 'always';
+
+export interface InputParserOptions {
+  headers?: {
+    domains: string[];
+    headers: Record<string, string>;
+  }[];
+  /**
+   * Optional Scalar bundler callback used to create external document keys.
+   */
+  compress?: (value: string) => Promise<string> | string;
+  externalRefs?: {
+    /**
+     * External `$ref` document targets to allow. Each entry should be the
+     * document part of the `$ref` (without the `#/...` fragment). File paths
+     * are relative to the spec file. Use `['*']` to allow all external refs.
+     *
+     * @default []
+     */
+    allow?: string[];
+    /**
+     * Controls how schemas imported from external documents are named.
+     *
+     * @default 'default'
+     */
+    strategy?: ExternalRefNamingStrategy;
+    // TODO: add `deny?: string[]` when users need "allow all except X"
+  };
+}
+
 export interface NormalizedInputOptions {
   target: string | OpenApiDocument;
   override: OverrideInput;
   unsafeDisableValidation: boolean;
   filters?: InputFiltersOptions;
-  parserOptions?: {
-    headers?: {
-      domains: string[];
-      headers: Record<string, string>;
-    }[];
-    externalRefs?: {
-      allow?: string[];
-      // TODO: add `deny?: string[]` when users need "allow all except X"
-    };
-  };
+  parserOptions?: InputParserOptions;
 }
 
 export type OutputClientFunc = (
@@ -473,30 +494,7 @@ export interface InputOptions {
    */
   unsafeDisableValidation?: boolean;
   filters?: InputFiltersOptions;
-  parserOptions?: {
-    headers?: {
-      domains: string[];
-      headers: Record<string, string>;
-    }[];
-    /**
-     * Control how external `$ref` targets (local files or remote URLs) are
-     * resolved.
-     *
-     * By default, orval refuses to resolve any external `$ref` and prints a
-     * config snippet you can paste into your `parserOptions`.
-     */
-    externalRefs?: {
-      /**
-       * External `$ref` document targets to allow. Each entry should be the
-       * document part of the `$ref` (without the `#/...` fragment). File paths
-       * are relative to the spec file. Use `['*']` to allow all external refs.
-       *
-       * @default []
-       */
-      allow?: string[];
-      // TODO: add `deny?: string[]` when users need "allow all except X"
-    };
-  };
+  parserOptions?: InputParserOptions;
 }
 
 export const OutputClient = {
