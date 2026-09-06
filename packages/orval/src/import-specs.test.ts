@@ -420,6 +420,107 @@ describe('validation', () => {
     }
   });
 
+  it('should apply async compress and always naming to transformer refs', async () => {
+    const workspace = await mkdtemp(
+      path.join(os.tmpdir(), 'orval-issue-3166-transformer-'),
+    );
+    const specPath = path.join(workspace, 'spec.yaml');
+    const externalPath = path.join(workspace, 'refs.yaml');
+    const compressInputs: string[] = [];
+
+    const spec = {
+      openapi: '3.0.2',
+      info: { title: 'transformer', version: '1.0.0' },
+      paths: {
+        '/path': {
+          get: {
+            operationId: 'getPath',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/Field' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          Field: { type: 'object', properties: { id: { type: 'string' } } },
+        },
+      },
+    };
+    const external = {
+      components: {
+        schemas: {
+          Point: { type: 'object', properties: { x: { type: 'number' } } },
+        },
+      },
+    };
+
+    try {
+      await writeFile(specPath, JSON.stringify(spec), 'utf8');
+      await writeFile(externalPath, JSON.stringify(external), 'utf8');
+
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: {
+              compress: async (value) => {
+                compressInputs.push(value);
+                return 'refs';
+              },
+              externalRefs: {
+                allow: ['refs.yaml'],
+                strategy: 'always',
+              },
+            },
+            override: {
+              transformer: (input: OpenApiDocument) => {
+                const next = structuredClone(input);
+                const field = next.components?.schemas?.Field as
+                  | { properties?: Record<string, unknown> }
+                  | undefined;
+                if (field) {
+                  field.properties ??= {};
+                  field.properties.geometry = {
+                    $ref: 'refs.yaml#/components/schemas/Point',
+                  };
+                }
+                return next;
+              },
+            },
+          },
+        },
+        workspace,
+        {},
+      );
+
+      const result = await importSpecs(workspace, normalizedOptions);
+
+      expect(compressInputs).toContain('refs.yaml');
+      expect(result.spec.components?.schemas).toHaveProperty('Point_refs');
+      expect(result.spec.components?.schemas?.Field).toEqual(
+        expect.objectContaining({
+          properties: {
+            id: { type: 'string' },
+            geometry: { $ref: '#/components/schemas/Point_refs' },
+          },
+        }),
+      );
+      expect(JSON.stringify(result.spec)).not.toContain('refs.yaml');
+      expect(JSON.stringify(result.spec)).not.toContain('#/x-ext/');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('should preserve date-like enum strings from YAML specs', async () => {
     const workspace = await mkdtemp(
       path.join(os.tmpdir(), 'orval-yaml-date-enum-'),
@@ -856,6 +957,53 @@ describe('externalRefs', () => {
     return { workspace, specPath };
   }
 
+  async function createSchemaRefWorkspace(
+    externalFiles: Record<string, unknown>,
+    refs: Record<string, string>,
+  ) {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'orval-schema-'));
+    const specPath = path.join(workspace, 'spec.yaml');
+    const paths = Object.fromEntries(
+      Object.entries(refs).map(([name, ref]) => [
+        `/${name}`,
+        {
+          get: {
+            operationId: `get${name}`,
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': { schema: { $ref: ref } },
+                },
+              },
+            },
+          },
+        },
+      ]),
+    );
+
+    await Promise.all(
+      Object.entries(externalFiles).map(([fileName, document]) =>
+        writeFile(
+          path.join(workspace, fileName),
+          JSON.stringify(document),
+          'utf8',
+        ),
+      ),
+    );
+    await writeFile(
+      specPath,
+      JSON.stringify({
+        openapi: '3.0.2',
+        info: { title: 'main', version: '1.0' },
+        paths,
+      }),
+      'utf8',
+    );
+
+    return { workspace, specPath };
+  }
+
   it('should block external $ref by default and print a config snippet', async () => {
     const { workspace, specPath } = await createExternalRefWorkspace();
     try {
@@ -1030,6 +1178,297 @@ describe('externalRefs', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('should forward compress and always-suffix external schemas', async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'orval-compress-'));
+    const specPath = path.join(workspace, 'spec.yaml');
+    const externalPath = path.join(workspace, 'billing.yaml');
+
+    await writeFile(
+      externalPath,
+      JSON.stringify({
+        openapi: '3.0.2',
+        info: { title: 'billing', version: '1.0' },
+        paths: {},
+        components: {
+          schemas: {
+            User: { type: 'object' },
+          },
+        },
+      }),
+      'utf8',
+    );
+    await writeFile(
+      specPath,
+      JSON.stringify({
+        openapi: '3.0.2',
+        info: { title: 'main', version: '1.0' },
+        paths: {
+          '/user': {
+            get: {
+              operationId: 'getUser',
+              responses: {
+                '200': {
+                  description: 'ok',
+                  content: {
+                    'application/json': {
+                      schema: {
+                        $ref: 'billing.yaml#/components/schemas/User',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: {
+              compress: () => 'billing',
+              externalRefs: {
+                allow: ['billing.yaml'],
+                strategy: 'always',
+              },
+            },
+          },
+        },
+        workspace,
+        {},
+      );
+
+      const result = await importSpecs(workspace, normalizedOptions);
+
+      expect(result.spec.components?.schemas).toHaveProperty('User_billing');
+      expect(
+        result.spec.paths?.['/user']?.get?.responses?.['200']?.content?.[
+          'application/json'
+        ]?.schema,
+      ).toEqual({ $ref: '#/components/schemas/User_billing' });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('should await an async compress callback end to end', async () => {
+    const compressInputs: string[] = [];
+    const { workspace, specPath } = await createSchemaRefWorkspace(
+      {
+        'billing.yaml': {
+          components: { schemas: { User: { type: 'object' } } },
+        },
+      },
+      { user: 'billing.yaml#/components/schemas/User' },
+    );
+
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: {
+              compress: async (value) => {
+                compressInputs.push(value);
+                return 'billing';
+              },
+              externalRefs: {
+                allow: ['billing.yaml'],
+                strategy: 'always',
+              },
+            },
+          },
+        },
+        workspace,
+        {},
+      );
+
+      const result = await importSpecs(workspace, normalizedOptions);
+
+      expect(compressInputs).toEqual(['billing.yaml']);
+      expect(result.spec.components?.schemas).toHaveProperty('User_billing');
+      expect(
+        result.spec.paths?.['/user']?.get?.responses?.['200']?.content,
+      ).toEqual({
+        'application/json': {
+          schema: { $ref: '#/components/schemas/User_billing' },
+        },
+      });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("should use Scalar's generated key for always mode without compress", async () => {
+    const { workspace, specPath } = await createSchemaRefWorkspace(
+      {
+        'billing.yaml': {
+          components: { schemas: { User: { type: 'object' } } },
+        },
+      },
+      { user: 'billing.yaml#/components/schemas/User' },
+    );
+
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: {
+              externalRefs: {
+                allow: ['billing.yaml'],
+                strategy: 'always',
+              },
+            },
+          },
+        },
+        workspace,
+        {},
+      );
+
+      const result = await importSpecs(workspace, normalizedOptions);
+      const schemaNames = Object.keys(result.spec.components?.schemas ?? {});
+      const generatedName = schemaNames.find((name) =>
+        name.startsWith('User_'),
+      );
+
+      expect(generatedName).toMatch(/^User_[a-zA-Z0-9]+$/);
+      expect(generatedName).not.toBe('User_billing');
+      expect(
+        result.spec.paths?.['/user']?.get?.responses?.['200']?.content?.[
+          'application/json'
+        ]?.schema,
+      ).toEqual({ $ref: `#/components/schemas/${generatedName}` });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('should keep stable names when external schema content changes', async () => {
+    const { workspace, specPath } = await createSchemaRefWorkspace(
+      {
+        'billing.yaml': {
+          components: {
+            schemas: {
+              User: {
+                type: 'object',
+                required: ['id'],
+                properties: { id: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+      { user: 'billing.yaml#/components/schemas/User' },
+    );
+
+    const importWithStableIdentity = async () => {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: {
+              compress: () => 'billing',
+              externalRefs: {
+                allow: ['billing.yaml'],
+                strategy: 'always',
+              },
+            },
+          },
+        },
+        workspace,
+        {},
+      );
+      return importSpecs(workspace, normalizedOptions);
+    };
+
+    try {
+      const first = await importWithStableIdentity();
+      await writeFile(
+        path.join(workspace, 'billing.yaml'),
+        JSON.stringify({
+          components: {
+            schemas: {
+              User: {
+                type: 'object',
+                required: ['id'],
+                properties: {
+                  id: { type: 'string' },
+                  nickname: { type: 'string' },
+                },
+              },
+            },
+          },
+        }),
+        'utf8',
+      );
+      const second = await importWithStableIdentity();
+
+      expect(first.spec.components?.schemas).toHaveProperty('User_billing');
+      expect(second.spec.components?.schemas).toHaveProperty('User_billing');
+      expect(first.spec.components?.schemas?.User_billing).not.toHaveProperty(
+        'properties.nickname',
+      );
+      expect(second.spec.components?.schemas?.User_billing).toHaveProperty(
+        'properties.nickname',
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('should propagate Scalar compressor collisions without a secondary error', async () => {
+    const { workspace, specPath } = await createSchemaRefWorkspace(
+      {
+        'billing.yaml': {
+          components: { schemas: { User: { type: 'object' } } },
+        },
+        'catalog.yaml': {
+          components: { schemas: { User: { type: 'object' } } },
+        },
+      },
+      {
+        billing: 'billing.yaml#/components/schemas/User',
+        catalog: 'catalog.yaml#/components/schemas/User',
+      },
+    );
+
+    try {
+      const normalizedOptions = await normalizeOptions(
+        {
+          output: { target: '' },
+          input: {
+            target: specPath,
+            parserOptions: {
+              compress: () => 'same',
+              externalRefs: {
+                allow: ['billing.yaml', 'catalog.yaml'],
+                strategy: 'always',
+              },
+            },
+          },
+        },
+        workspace,
+        {},
+      );
+
+      await expect(importSpecs(workspace, normalizedOptions)).rejects.toBe(
+        'Can not generate unique compressed values',
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('optionsParamRequired', () => {
@@ -1175,6 +1614,361 @@ export const handleResource = (
 });
 
 describe('dereferenceExternalRefs', () => {
+  it('should match an x-ext placeholder to its source document', () => {
+    const input = {
+      components: {
+        schemas: {
+          User: {
+            $ref: '#/x-ext/catalog/components/schemas/User',
+          },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: {
+            schemas: {
+              User: { type: 'string', enum: ['billing'] },
+            },
+          },
+        },
+        catalog: {
+          components: {
+            schemas: {
+              User: { type: 'string', enum: ['catalog'] },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input) as {
+      components: { schemas: Record<string, unknown> };
+    };
+
+    expect(result.components.schemas.User).toEqual({
+      type: 'string',
+      enum: ['catalog'],
+    });
+    expect(result.components.schemas.User_billing).toEqual({
+      type: 'string',
+      enum: ['billing'],
+    });
+    expect(JSON.stringify(result)).not.toContain('#/x-ext/');
+  });
+
+  it('should reject an occupied default-mode suffix without overwriting it', () => {
+    const input = {
+      components: {
+        schemas: {
+          User: { type: 'string', enum: ['local'] },
+          User_billing: { type: 'string', enum: ['occupied'] },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: {
+            schemas: {
+              User: { type: 'string', enum: ['external'] },
+            },
+          },
+        },
+      },
+    };
+
+    expect(() => dereferenceExternalRef(input)).toThrow(
+      /external schema.*User.*billing.*User_billing/i,
+    );
+  });
+
+  it('should rewrite always-mode direct and nested cross-document refs', () => {
+    const input = {
+      components: {
+        schemas: {
+          Holder: {
+            $ref: '#/x-ext/billing/components/schemas/Order',
+          },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: {
+            schemas: {
+              Order: {
+                type: 'object',
+                properties: {
+                  product: {
+                    $ref: '#/x-ext/catalog/components/schemas/Product',
+                  },
+                },
+              },
+            },
+          },
+        },
+        catalog: {
+          components: {
+            schemas: {
+              Product: { type: 'string' },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input, 'always') as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+
+    expect(result.components.schemas.Holder).toEqual({
+      $ref: '#/components/schemas/Order_billing',
+    });
+    expect(result.components.schemas.Order_billing).toEqual({
+      type: 'object',
+      properties: {
+        product: { $ref: '#/components/schemas/Product_catalog' },
+      },
+    });
+    expect(result.components.schemas).toHaveProperty('Product_catalog');
+    expect(JSON.stringify(result)).not.toContain('#/x-ext/');
+  });
+
+  it('should reject a post-sanitization external schema collision', () => {
+    const input = {
+      'x-ext': {
+        'service-a': {
+          components: {
+            schemas: { User: { type: 'string', enum: ['first'] } },
+          },
+        },
+        service_a: {
+          components: {
+            schemas: { User: { type: 'string', enum: ['second'] } },
+          },
+        },
+      },
+    };
+
+    expect(() => dereferenceExternalRef(input, 'always')).toThrow(
+      /external schema.*User.*service_a.*User_service_a/i,
+    );
+  });
+
+  it('should always name duplicate schemas by their external document', () => {
+    const input = {
+      components: {
+        schemas: {
+          BillingUser: {
+            $ref: '#/x-ext/billing/components/schemas/User',
+          },
+          CatalogUser: {
+            $ref: '#/x-ext/catalog/components/schemas/User',
+          },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: { schemas: { User: { type: 'string' } } },
+        },
+        catalog: {
+          components: { schemas: { User: { type: 'number' } } },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input, 'always') as {
+      components: { schemas: Record<string, unknown> };
+    };
+
+    expect(result.components.schemas).toHaveProperty('User_billing');
+    expect(result.components.schemas).toHaveProperty('User_catalog');
+    expect(result.components.schemas.BillingUser).toEqual({
+      $ref: '#/components/schemas/User_billing',
+    });
+    expect(result.components.schemas.CatalogUser).toEqual({
+      $ref: '#/components/schemas/User_catalog',
+    });
+  });
+
+  it('should reuse one always-named component for repeated external refs', () => {
+    const input = {
+      components: {
+        schemas: {
+          First: { $ref: '#/x-ext/billing/components/schemas/User' },
+          Second: { $ref: '#/x-ext/billing/components/schemas/User' },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: { schemas: { User: { type: 'string' } } },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input, 'always') as {
+      components: { schemas: Record<string, unknown> };
+    };
+
+    expect(Object.keys(result.components.schemas)).toEqual([
+      'First',
+      'Second',
+      'User_billing',
+    ]);
+    expect(result.components.schemas.First).toEqual({
+      $ref: '#/components/schemas/User_billing',
+    });
+    expect(result.components.schemas.Second).toEqual({
+      $ref: '#/components/schemas/User_billing',
+    });
+  });
+
+  it('should keep always-mode names stable when external order is reversed', () => {
+    const createInput = (reverse: boolean) => ({
+      components: {
+        schemas: {
+          BillingUser: {
+            $ref: '#/x-ext/billing/components/schemas/User',
+          },
+          CatalogUser: {
+            $ref: '#/x-ext/catalog/components/schemas/User',
+          },
+        },
+      },
+      'x-ext': reverse
+        ? {
+            catalog: {
+              components: { schemas: { User: { type: 'number' } } },
+            },
+            billing: {
+              components: { schemas: { User: { type: 'string' } } },
+            },
+          }
+        : {
+            billing: {
+              components: { schemas: { User: { type: 'string' } } },
+            },
+            catalog: {
+              components: { schemas: { User: { type: 'number' } } },
+            },
+          },
+    });
+
+    const project = (reverse: boolean) => {
+      const schemas = (
+        dereferenceExternalRef(createInput(reverse), 'always') as {
+          components: { schemas: Record<string, unknown> };
+        }
+      ).components.schemas;
+      return {
+        billing: schemas.BillingUser,
+        catalog: schemas.CatalogUser,
+        names: Object.keys(schemas)
+          .filter((name) => name.startsWith('User_'))
+          .sort(),
+      };
+    };
+
+    expect(project(true)).toEqual(project(false));
+  });
+
+  it('should always suffix external schemas and rewrite their internal refs', () => {
+    const input = {
+      components: {
+        schemas: {
+          Holder: {
+            allOf: [{ $ref: '#/x-ext/billing/components/schemas/Order' }],
+          },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: {
+            schemas: {
+              User: { type: 'object' },
+              Order: {
+                type: 'object',
+                properties: {
+                  user: { $ref: '#/components/schemas/User' },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input, 'always') as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+
+    expect(result.components.schemas).toHaveProperty('User_billing');
+    expect(result.components.schemas).toHaveProperty('Order_billing');
+    expect(result.components.schemas.Order_billing).toEqual({
+      type: 'object',
+      properties: {
+        user: { $ref: '#/components/schemas/User_billing' },
+      },
+    });
+    expect(result.components.schemas.Holder).toEqual({
+      allOf: [{ $ref: '#/components/schemas/Order_billing' }],
+    });
+    expect(result).not.toHaveProperty('x-ext');
+  });
+
+  it('should preserve an x-ext placeholder as an alias in always mode', () => {
+    const input = {
+      components: {
+        schemas: {
+          User: {
+            $ref: '#/x-ext/billing/components/schemas/User',
+          },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: {
+            schemas: {
+              User: { type: 'object', properties: { id: { type: 'string' } } },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input, 'always') as {
+      components: { schemas: Record<string, unknown> };
+    };
+
+    expect(result.components.schemas.User).toEqual({
+      $ref: '#/components/schemas/User_billing',
+    });
+    expect(result.components.schemas.User_billing).toEqual({
+      type: 'object',
+      properties: { id: { type: 'string' } },
+    });
+  });
+
+  it('should reject a suffixed external schema name collision', () => {
+    const input = {
+      components: {
+        schemas: {
+          User_billing: { type: 'string' },
+        },
+      },
+      'x-ext': {
+        billing: {
+          components: {
+            schemas: {
+              User: { type: 'object' },
+            },
+          },
+        },
+      },
+    };
+
+    expect(() => dereferenceExternalRef(input, 'always')).toThrow(
+      /external schema.*User.*billing.*User_billing/i,
+    );
+  });
+
   it('should dereference x-ext references and remove x-ext property', () => {
     const input = {
       openapi: '3.0.0',
@@ -1751,6 +2545,53 @@ describe('dereferenceExternalRefs', () => {
     expect(result).not.toHaveProperty('x-ext');
   });
 
+  it('should rewrite an always-mode barrel ref across external documents', () => {
+    const input = {
+      components: {
+        schemas: {
+          UserProjectDTO: {
+            $ref: '#/x-ext/barrel/components/schemas/UserProjectDTO',
+          },
+        },
+      },
+      'x-ext': {
+        barrel: {
+          components: {
+            schemas: {
+              UserProjectDTO: {
+                $ref: '#/x-ext/concrete/components/schemas/UserProject',
+              },
+            },
+          },
+        },
+        concrete: {
+          components: {
+            schemas: {
+              UserProject: {
+                type: 'object',
+                properties: { id: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = dereferenceExternalRef(input, 'always') as OpenApiDocument;
+    const schemas = result.components?.schemas;
+
+    expect(schemas).toHaveProperty('UserProjectDTO_barrel');
+    expect(schemas).toHaveProperty('UserProject_concrete');
+    expect(schemas?.UserProjectDTO_barrel).toEqual({
+      $ref: '#/components/schemas/UserProject_concrete',
+    });
+    expect(schemas?.UserProject_concrete).toEqual({
+      type: 'object',
+      properties: { id: { type: 'string' } },
+    });
+    expect(JSON.stringify(result)).not.toContain('#/x-ext/');
+  });
+
   // Regression test for https://github.com/orval-labs/orval/issues/394
   it('should resolve internal $ref inside an external parameter against the external doc', () => {
     const input = {
@@ -1830,6 +2671,9 @@ describe('dereferenceExternalRefs', () => {
               name: { type: 'string' },
             },
           },
+          Holder: {
+            $ref: '#/x-ext/external/components/schemas/User',
+          },
         },
       },
       'x-ext': {
@@ -1852,7 +2696,23 @@ describe('dereferenceExternalRefs', () => {
 
     const result = dereferenceExternalRef(input) as OpenApiDocument;
 
-    expect(result.components?.schemas).toHaveProperty('User_external');
+    expect(result.components?.schemas?.User).toEqual({
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+      },
+    });
+    expect(result.components?.schemas?.User_external).toEqual({
+      type: 'object',
+      properties: {
+        email: { type: 'string' },
+        age: { type: 'number' },
+      },
+    });
+    expect(result.components?.schemas?.Holder).toEqual({
+      $ref: '#/components/schemas/User_external',
+    });
     expect(result).not.toHaveProperty('x-ext');
   });
 

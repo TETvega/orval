@@ -4,6 +4,7 @@ import {
   isString,
   isUrl,
   logWarning,
+  type ExternalRefNamingStrategy,
   type NormalizedOptions,
   type OpenApiDocument,
   type OverrideInput,
@@ -555,9 +556,13 @@ async function bundleAndDereferenceExternalRefs(
       parseYaml(),
     ],
     treeShake: false,
+    ...(parserOptions?.compress ? { compress: parserOptions.compress } : {}),
     ...(origin ? { origin } : {}),
   });
-  return dereferenceExternalRef(data as Record<string, unknown>);
+  return dereferenceExternalRef(
+    data as Record<string, unknown>,
+    parserOptions?.externalRefs?.strategy,
+  );
 }
 
 // ─── External ref allow-list enforcement (GHSA-cxq5-97v7-87j8) ─────────────
@@ -834,11 +839,12 @@ export function validateComponentKeys(data: Record<string, unknown>): void {
  */
 export function dereferenceExternalRef(
   data: Record<string, unknown>,
+  strategy: ExternalRefNamingStrategy = 'default',
 ): Record<string, unknown> {
   const extensions = (data['x-ext'] ?? {}) as Record<string, unknown>;
 
   // Step 1: Merge external schemas into main spec with collision handling
-  const schemaNameMappings = mergeExternalSchemas(data, extensions);
+  const schemaNameMappings = mergeExternalSchemas(data, extensions, strategy);
 
   // Step 2: Replace all x-ext refs throughout the document
   const result: Record<string, unknown> = {};
@@ -858,6 +864,7 @@ export function dereferenceExternalRef(
 function mergeExternalSchemas(
   data: Record<string, unknown>,
   extensions: Record<string, unknown>,
+  strategy: ExternalRefNamingStrategy,
 ): Record<string, Record<string, string>> {
   const schemaNameMappings: Record<string, Record<string, string>> = {};
 
@@ -868,10 +875,9 @@ function mergeExternalSchemas(
   mainComponents.schemas ??= {};
   const mainSchemas = mainComponents.schemas as Record<string, unknown>;
 
-  // Merge schemas from each external doc
-  // Collision handling:
-  // - If schema already exists in main spec, add x-ext key as suffix (e.g., User -> User_external1)
-  // - x-ext refs in main spec get replaced by actual schema from external doc
+  // Merge schemas from each external doc. In default mode, preserve the
+  // original name unless it is occupied by a different schema. In always mode,
+  // include the external document key for every external schema.
   for (const [extKey, extDoc] of Object.entries(extensions)) {
     schemaNameMappings[extKey] = {};
 
@@ -880,26 +886,43 @@ function mergeExternalSchemas(
       if (isObject(extComponents) && 'schemas' in extComponents) {
         const extSchemas = extComponents.schemas as Record<string, unknown>;
         for (const [schemaName, schema] of Object.entries(extSchemas)) {
-          // Check if main schema is just an x-ext ref - if so, replace it without suffix
           const existingSchema = mainSchemas[schemaName];
-          const isXExtRef =
+          const existingRef =
             isObject(existingSchema) &&
             '$ref' in existingSchema &&
             isString(existingSchema.$ref) &&
-            existingSchema.$ref.startsWith('#/x-ext/');
+            existingSchema.$ref;
+          const isMatchingXExtRef =
+            existingRef ===
+            `#/x-ext/${extKey}/components/schemas/${schemaName}`;
 
           let finalSchemaName = schemaName;
 
-          if (schemaName in mainSchemas && !isXExtRef) {
-            // Collision: add suffix to external schema
-            const suffix = extKey.replaceAll(/[^a-zA-Z0-9]/g, '_');
-            finalSchemaName = `${schemaName}_${suffix}`;
-            schemaNameMappings[extKey][schemaName] = finalSchemaName;
-          } else {
-            // No collision or replacing x-ext ref
-            schemaNameMappings[extKey][schemaName] = schemaName;
+          const suffix = extKey.replaceAll(/[^a-zA-Z0-9]/g, '_');
+          if (strategy === 'always' && suffix.length === 0) {
+            throw new Error(
+              `External schema "${schemaName}" from "${extKey}" cannot be named with the always strategy because its external document identity is empty after sanitization.`,
+            );
           }
 
+          if (strategy === 'always') {
+            finalSchemaName = `${schemaName}_${suffix}`;
+          } else if (schemaName in mainSchemas && !isMatchingXExtRef) {
+            finalSchemaName = `${schemaName}_${suffix}`;
+          }
+
+          const isExistingPlaceholder =
+            finalSchemaName === schemaName && isMatchingXExtRef;
+          if (
+            Object.hasOwn(mainSchemas, finalSchemaName) &&
+            !isExistingPlaceholder
+          ) {
+            throw new Error(
+              `External schema "${schemaName}" from "${extKey}" cannot be merged as "${finalSchemaName}" because that component name is already occupied.`,
+            );
+          }
+
+          schemaNameMappings[extKey][schemaName] = finalSchemaName;
           mainSchemas[finalSchemaName] = scrubUnwantedKeys(schema);
         }
       }

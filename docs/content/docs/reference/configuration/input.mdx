@@ -272,6 +272,54 @@ export default defineConfig({
 });
 ```
 
+### compress
+
+**Type:** `(value: string) => Promise<string> | string`
+
+Optional callback forwarded to `@scalar/json-magic` when external references are
+bundled. It may be synchronous or asynchronous. The callback receives Scalar's
+normalized external document identity/path, not necessarily the literal `$ref`,
+and returns the key used internally for that document. Returning stable service
+names makes external schema names easier to read when using
+`externalRefs.strategy: 'always'`.
+
+```ts title="orval.config.ts"
+import { defineConfig } from 'orval';
+
+const externalIdentity = (value: string) => {
+  if (value.includes('billing')) return 'billing';
+  if (value.includes('catalog')) return 'catalog';
+  return value;
+};
+
+export default defineConfig({
+  petstore: {
+    input: {
+      target: './openapi.yaml',
+      parserOptions: {
+        compress: externalIdentity,
+        externalRefs: {
+          allow: ['*'],
+          strategy: 'always',
+        },
+      },
+    },
+  },
+});
+```
+
+With this configuration, a `User` schema from `billing.yaml` is emitted as
+`User_billing`. An asynchronous callback uses the same configuration shape:
+
+```ts
+const externalIdentity = async (value: string) =>
+  value.includes('billing') ? 'billing' : value;
+```
+
+The callback must produce unique values for distinct external documents. Scalar
+will retry collisions, but a callback that cannot produce a unique value fails
+instead of silently merging two documents.
+
 ### externalRefs
 
 Control how external `$ref` targets (local files or remote URLs) are resolved.
@@ -316,12 +364,42 @@ parserOptions: {
 }
 ```
 
+#### strategy
+
+**Type:** `'default' | 'always'`
+**Default:** `'default'`
+
+Controls the names assigned to schemas imported from external documents.
+
+- `default` preserves the current behavior: an external schema keeps its
+  original name and receives a suffix only when that name collides with an
+  existing schema.
+- `always` appends the sanitized external document key to every external
+  schema. For example, `User` from the `billing` document becomes
+  `User_billing`.
+
+The external document key is produced by `parserOptions.compress` when it is
+configured. Without `compress`, `always` still works, but Scalar's default
+generated, hash-like key is used, so names may look like `User_<generated-key>`.
+Use a stable custom `compress` callback such as one that maps `billing.yaml` to
+`billing` when human-readable names are needed.
+
+Orval does not silently overwrite an existing final component name. A collision
+with a local or external component, including a collision after suffix
+sanitization, produces an explicit error. This deliberately prevents an
+ambiguous suffix from overwriting a schema as could happen in the legacy
+behavior.
+
 <Callout type="warn">
   **Security:** External `$ref` values come from the spec being processed, which may
   be untrusted. Allowing all external refs (`['*']`) means orval will read arbitrary
   local files and fetch arbitrary URLs referenced by the spec. Prefer listing
   specific documents you trust.
 </Callout>
+
+`externalRefs.allow` still controls which external documents may be loaded;
+`compress` and `strategy` only control the names of external schemas that have
+already been allowed.
 
 ## unsafeDisableValidation
 
