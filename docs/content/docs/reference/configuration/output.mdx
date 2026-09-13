@@ -25,7 +25,10 @@ export default defineConfig({
 
 **Type:** `String | Function`
 **Default:** `'axios-functions'`
-**Options:** `angular`, `angular-query`, `axios`, `axios-functions`, `react-query`, `solid-start`, `solid-query`, `svelte-query`, `vue-query`, `swr`, `zod`, `effect`, `hono`, `fetch`, `mcp`
+**Options:** `angular`, `angular-query`, `axios`, `axios-functions`, `react-query`, `solid-start`, `solid-query`, `svelte-query`, `vue-query`, `pinia-colada`, `swr`, `zod`, `effect`, `hono`, `fetch`, `mcp`
+
+See the [Pinia Colada guide](/docs/guides/pinia-colada) for generated Vue
+queries, mutations, query keys, and options.
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -444,7 +447,7 @@ export default defineConfig({
 
 ## mode
 
-**Type:** `'single' | 'split' | 'tags' | 'tags-split'`
+**Type:** `'single' | 'split' | 'tags' | 'tags-split' | 'tags-operations' | 'tags-operations-split'`
 **Default:** `'single'`
 
 ### single
@@ -521,6 +524,47 @@ my-app/src/
 └── users/
     └── users.ts
 ```
+
+### tags-operations
+
+Generate one implementation file per operation inside a directory for each
+OpenAPI tag. When `indexFiles` is enabled (the default), a per-tag `index.ts`
+re-exports the operation files:
+
+```
+my-app/src/
+└── pets/
+    ├── get-pet.ts
+    ├── list-pets.ts
+    └── index.ts
+```
+
+The operation file contains that operation's types and runtime implementation.
+With `indexFiles: false`, import the operation files directly.
+This mode is supported for the `react-query`, `svelte-query`, `vue-query`,
+`swr`, and `fetch` clients.
+
+### tags-operations-split
+
+Generate one implementation file and one `.schemas.ts` file per operation,
+nested under the operation's tag directory. When `indexFiles` is enabled (the
+default), a per-tag `index.ts` re-exports both files:
+
+```
+my-app/src/
+└── pets/
+    ├── get-pet.ts
+    ├── get-pet.schemas.ts
+    ├── list-pets.ts
+    ├── list-pets.schemas.ts
+    └── index.ts
+```
+
+This mode uses the same supported clients as `tags-operations`. With
+`indexFiles: false`, import the operation and schema files directly. Component
+schemas referenced by an operation are emitted into that operation's schema
+file; schemas configured through `output.schemas` continue to use that output
+location.
 
 ## baseUrl
 
@@ -808,11 +852,11 @@ Generate `index.ts` files for schemas.
 
 In `tags-split` mode, extract shared infrastructure types (e.g. `HTTPStatusCode*` emitted by the fetch client) into a single `common-types.ts` file and generate a barrel `index.ts` at the target root.
 
-When enabled alongside [`indexFiles: true`](#indexfiles):
+Deduplication and [`indexFiles`](#indexfiles) control separate behaviors:
 
 - Shared types that would otherwise be duplicated across per-tag files are collected and written once to `[commonTypesFileName].ts`
 - Each per-tag file imports shared types from the common file instead of declaring them inline
-- A barrel `index.ts` is generated with named re-exports for public shared types plus `export *` re-exports for each per-tag implementation file
+- When `indexFiles: true`, a barrel `index.ts` is generated with named re-exports for public shared types plus `export *` re-exports for each per-tag implementation file
 
 ```ts title="orval.config.ts"
 export default defineConfig({
@@ -841,7 +885,9 @@ src/api/
     └── health.ts             ← import type { ... } from '../common-types'
 ```
 
-When disabled (default), shared types are inlined per-tag and no barrel is generated — identical to previous behavior.
+When `tagsSplitDeduplication` is disabled (default), shared types are inlined
+per tag. When `indexFiles` is `false`, the shared types file can still be
+generated, but the root barrel is not generated.
 
 Suppressed when [`workspace`](#workspace) is set (the workspace barrel handles aggregation).
 
@@ -1752,6 +1798,10 @@ Override SWR hook options.
 
 Zod schema generation options:
 
+For inline array responses, item schemas using `allOf`, `oneOf`, or `anyOf` are
+also emitted as operation item schemas. Array items that are component
+`$ref`s continue to use the component schema writer. See the [Zod guide](/docs/guides/zod#array-response-items) for an example.
+
 ```ts title="orval.config.ts"
 export default defineConfig({
   petstore: {
@@ -2598,7 +2648,10 @@ export default defineConfig({
 **Type:** `Boolean`
 **Default:** `true`
 
-Include HTTP status in return type. Set to `false` to return data directly.
+Include HTTP status in return type. Set to `false` to return data directly. When
+an exact response status and a matching wildcard are both declared, the exact
+status takes precedence in the generated type. For example, `200` and `2XX`
+produce `status: 200` and `status: Exclude<HTTPStatusCode2xx, 200>`.
 
 ### forceSuccessResponse
 
@@ -3002,6 +3055,31 @@ export default defineConfig({
 ```
 
 ---
+
+The default suffix is `''` for schemas, `'Response'` for responses,
+`'Parameter'` for parameters, and `'Body'` for request bodies. Set a suffix to
+`''` explicitly to disable it.
+
+For array schemas, `schemas.itemSuffix` controls the suffix of the generated
+item type. It defaults to `'Item'` and applies only to `components.schemas`:
+
+```ts title="orval.config.ts"
+export default defineConfig({
+  petstore: {
+    output: {
+      override: {
+        components: {
+          schemas: { itemSuffix: 'Element' },
+        },
+      },
+    },
+  },
+});
+```
+
+An inline array response can consequently produce an item type such as
+`ListPets200Element`. The item suffix names the generated element type; it does
+not change the component schema's structure.
 
 ## Type Generation Options
 
