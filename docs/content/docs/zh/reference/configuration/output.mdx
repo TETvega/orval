@@ -752,7 +752,7 @@ import { getPetMock } from '@acme/data-layer/sdk/fakers';
 **类型：** `Boolean`
 **默认值：** `false`
 
-在 `tags-split` 模式下，将共享的基础设施类型（例如 fetch client 生成的 `HTTPStatusCode*`）提取到单独的 `common-types.ts` 文件中，并在 target 根目录生成一个 barrel `index.ts`。
+在 `tags-split` 模式下，只有启用 `tagsSplitDeduplication` 且未设置 `workspace` 时，才可以将共享的基础设施类型（例如 fetch client 生成的 `HTTPStatusCode*`）提取到单独的 `common-types.ts` 文件中。只有存在需要提取的共享类型时，才会生成共享类型文件；`indexFiles` 独立控制是否生成根目录的 `index.ts` barrel。
 
 该选项与 [`indexFiles`](#indexfiles) 控制不同的行为：
 
@@ -787,9 +787,9 @@ src/api/
     └── health.ts             ← import type { ... } from '../common-types'
 ```
 
-禁用 `tagsSplitDeduplication` 时（默认），共享类型会继续按 tag 内联。设置 `indexFiles: false` 时，仍然可以生成共享类型文件，但不会生成根 barrel。
+禁用 `tagsSplitDeduplication` 时（默认），共享类型会继续按 tag 内联。只有在启用 `tagsSplitDeduplication` 且未设置 `workspace` 时，才可以提取共享类型。满足该条件时，即使 `indexFiles: false`，共享类型文件仍然可以生成，但不会生成根 barrel。
 
-当设置了 [`workspace`](#workspace) 时，此选项会被抑制（workspace 自己的 barrel 会处理聚合）。
+当设置了 [`workspace`](#workspace) 时，共享类型提取会被抑制，由 workspace 自己的 barrel 负责聚合。
 
 ## commonTypesFileName
 
