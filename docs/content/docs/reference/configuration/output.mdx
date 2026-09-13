@@ -1190,6 +1190,8 @@ Pass `false` to omit the comment block, or a function to replace it. Passing
 `true` produces the same output as omitting the option, since any value that is
 neither `false` nor a function falls back to the built-in header.
 
+The callback receives the OpenAPI [`Info Object`](https://spec.openapis.org/oas/v3.1.1#info-object) as `info`. `title` and `version` are required by the OpenAPI specification. `summary`, `description`, `termsOfService`, `contact`, and `license` are optional, so check them before using them. Specification extensions such as `x-*` may also be present. Return either one string, which is used verbatim, or an array of strings, which is rendered one line per string.
+
 ```ts title="orval.config.ts"
 export default defineConfig({
   petstore: {
@@ -2955,6 +2957,11 @@ Override by OpenAPI tag (same options as `operations`).
 **Type:** `Function`
 
 Custom function to override generated operation names.
+
+The callback receives `(operation, route, verb)`, where `operation` is the OpenAPI
+Operation Object, `route` is the operation's route string, and `verb` is Orval's
+HTTP verb value. Return a string to set both the method name and the type-name base,
+or return `[methodName, typeNameBase]` to control them independently.
 
 **Return `string`** to control both the method name and the type-name base together:
 

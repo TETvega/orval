@@ -1083,6 +1083,8 @@ export default defineConfig({
 
 传入 `false` 可以省略该注释块，传入函数则可替换它。传入 `true` 的效果与省略该选项相同，因为只要值既不是 `false` 也不是函数，就会回退到内置 header。
 
+该回调接收 OpenAPI [`Info Object`](https://spec.openapis.org/oas/v3.1.1#info-object) 作为 `info`。根据 OpenAPI 规范，`title` 和 `version` 是必填字段；`summary`、`description`、`termsOfService`、`contact` 和 `license` 是可选字段，使用前应先进行检查。对象中也可能包含 `x-*` 等规范扩展。回调可以返回一个字符串（按原样使用），也可以返回字符串数组（每个字符串渲染为一行）。
+
 ```ts title="orval.config.ts"
 export default defineConfig({
   petstore: {
@@ -2701,6 +2703,8 @@ export default defineConfig({
 **类型：** `Function`
 
 用于覆盖生成的 operation 名称的自定义函数。
+
+该回调接收 `(operation, route, verb)`：`operation` 是 OpenAPI Operation Object，`route` 是 operation 的 route 字符串，`verb` 是 Orval 的 HTTP verb 值。返回字符串时会同时设置方法名和类型名基底；返回 `[methodName, typeNameBase]` 时可以分别控制两者。
 
 **返回 `string`** 时，会同时控制方法名和类型名基底：
 
